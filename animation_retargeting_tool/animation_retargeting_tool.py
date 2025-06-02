@@ -21,6 +21,7 @@ import maya.mel
 import maya.cmds as cmds
 from functools import partial
 import maya.OpenMayaUI as omui
+import json
 
 maya_version = int(cmds.about(version=True))
 
@@ -79,6 +80,8 @@ class RetargetingTool(QtWidgets.QDialog):
         self.pos_checkbox = QtWidgets.QCheckBox("Translation")
         self.mo_checkbox = QtWidgets.QCheckBox("Maintain Offset")
         self.snap_checkbox = QtWidgets.QCheckBox("Align To Position")
+        self.export_conn_button = QtWidgets.QPushButton("Export Connections")
+        self.import_conn_button = QtWidgets.QPushButton("Import Connections")
  
     def create_ui_layout(self):
         horizontal_layout_1 = QtWidgets.QHBoxLayout()
@@ -93,6 +96,9 @@ class RetargetingTool(QtWidgets.QDialog):
         horizontal_layout_3 = QtWidgets.QHBoxLayout()
         horizontal_layout_3.addWidget(self.batch_bake_button)
         horizontal_layout_3.addWidget(self.bake_button)
+        horizontal_layout_4 = QtWidgets.QHBoxLayout()
+        horizontal_layout_4.addWidget(self.export_conn_button)
+        horizontal_layout_4.addWidget(self.import_conn_button)
  
         connection_list_widget = QtWidgets.QWidget()
  
@@ -116,6 +122,7 @@ class RetargetingTool(QtWidgets.QDialog):
         main_layout.addLayout(horizontal_layout_2)
         main_layout.addWidget(separator_line)
         main_layout.addLayout(horizontal_layout_3)
+        main_layout.addLayout(horizontal_layout_4)
  
     def create_ui_connections(self):
         self.simple_conn_button.clicked.connect(self.create_connection_node)
@@ -124,6 +131,8 @@ class RetargetingTool(QtWidgets.QDialog):
         self.bake_button.clicked.connect(self.bake_animation_confirm)
         self.batch_bake_button.clicked.connect(self.open_batch_window)
         self.help_button.clicked.connect(self.help_dialog)
+        self.export_conn_button.clicked.connect(self.export_connections)
+        self.import_conn_button.clicked.connect(self.import_connections)
 
         self.rot_checkbox.setChecked(True)
         self.pos_checkbox.setChecked(True)
@@ -351,6 +360,78 @@ class RetargetingTool(QtWidgets.QDialog):
             pass
         self.settings_window = BatchExport()
         self.settings_window.show()
+    
+    def export_connections(self):
+        connect_nodes = self.get_connect_nodes()
+        export_data = []
+        for node in connect_nodes:
+            
+            parent = cmds.listRelatives(node, parent=True)
+            ctrl = None
+            conn_type = None
+            if cmds.listConnections(node + ".ConnectNode", destination=True):
+                ctrl = cmds.listConnections(node + ".ConnectNode", destination=True)[0]
+                
+                constraints = cmds.listRelatives(ctrl, type="constraint")
+                if constraints:
+                    for c in constraints:
+                        if cmds.nodeType(c) == "parentConstraint":
+                            conn_type = "parent"
+                        elif cmds.nodeType(c) == "orientConstraint":
+                            conn_type = "orient"
+                        elif cmds.nodeType(c) == "pointConstraint":
+                            conn_type = "point"
+            export_data.append({
+                "node": node,
+                "parent": parent[0] if parent else "",
+                "controller": ctrl,
+                "conn_type": conn_type
+            })
+        file_path, _ = QtWidgets.QFileDialog.getSaveFileName(self, "Export Connections", "", "JSON Files (*.json)")
+        if file_path:
+            with open(file_path, "w") as f:
+                json.dump(export_data, f, indent=4)
+            cmds.inViewMessage(amg="Connections exported!", pos="topCenter", fade=True)
+
+    def import_connections(self):
+        file_path, _ = QtWidgets.QFileDialog.getOpenFileName(self, "Import Connections", "", "JSON Files (*.json)")
+        if not file_path:
+            return
+        with open(file_path, "r") as f:
+            import_data = json.load(f)
+        for item in import_data:
+            joint = item["parent"]
+            ctrl = item["controller"]
+            conn_type = item["conn_type"]
+            if not (cmds.objExists(joint) and cmds.objExists(ctrl)):
+                cmds.warning("Joint or controller not found: {} / {}".format(joint, ctrl))
+                continue
+          
+            if conn_type == "parent":
+                suffix = "_TRAN_ROT"
+            elif conn_type == "orient":
+                suffix = "_ROT"
+            elif conn_type == "point":
+                suffix = "_TRAN"
+            else:
+                suffix = "_TRAN_ROT"
+            locator = self.create_ctrl_sphere(joint + suffix)
+            cmds.addAttr(locator, longName="ConnectNode", attributeType="message")
+            if not cmds.attributeQuery("ConnectedCtrl", node=ctrl, exists=True):
+                cmds.addAttr(ctrl, longName="ConnectedCtrl", attributeType="message")
+            cmds.connectAttr(locator + ".ConnectNode", ctrl + ".ConnectedCtrl")
+            cmds.parent(locator, joint)
+            cmds.xform(locator, rotation=(0, 0, 0))
+            cmds.xform(locator, translation=(0, 0, 0))
+           
+            if conn_type == "parent":
+                cmds.parentConstraint(locator, ctrl, maintainOffset=True)
+            elif conn_type == "orient":
+                cmds.orientConstraint(locator, ctrl, maintainOffset=True)
+            elif conn_type == "point":
+                cmds.pointConstraint(locator, ctrl, maintainOffset=True)
+        self.refresh_ui_list()
+        cmds.inViewMessage(amg="Connections imported!", pos="topCenter", fade=True)
 
     @classmethod
     def bake_animation(cls):
@@ -567,8 +648,8 @@ class BatchExport(QtWidgets.QDialog):
         main_layout.addWidget(self.file_list_widget)
         main_layout.addLayout(horizontal_layout_2)
         main_layout.addLayout(horizontal_layout_1)
-        main_layout.addLayout(horizontal_layout_4)
         main_layout.addLayout(horizontal_layout_3)
+        main_layout.addLayout(horizontal_layout_4)
 
     def create_connections(self):
         self.connection_filepath_button.clicked.connect(self.connection_filepath_dialog)
@@ -707,6 +788,7 @@ class BatchExport(QtWidgets.QDialog):
         progress_dialog.setValue(number_of_operations)
         progress_dialog.close()
 
+    
 
 def start():
     global retarget_tool_ui
